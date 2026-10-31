@@ -2,6 +2,21 @@
 
 Verified locally on 31 October 2026, macOS ARM64, Python 3.14.8. No Pi deployment, live frame endpoint, service enablement or weather modification occurred.
 
+## Focused CDN fix — v0.4.1
+
+Completed before publication:
+
+- Added one default-false setting, `allow_broken_cdn_robots_redirect`. Only a typed DNS failure after the exact known CDN robots redirect can activate the explicit exception. No global robots-off switch or hostname rewrite was added.
+- Valid robots responses are saved atomically in `cdn-robots.json`; cached rules, including Disallow and crawl spacing, remain enforced during the known fault. Corrupt policies fail closed. Other robots failures and explicit HTTP restrictions remain blocking.
+- **139 recipe tests passed**, including strict default failure, explicit known-fault activation, transport-stage classification, current/cached Disallow, corrupt cache, nonmatching errors, image 401/403/429, boolean validation and WebP bytes served from a .jpg URL. The actual recipe/frame integration test was rerun and passed. The unchanged frame patch had 97 passing tests in the prior verification.
+- Ran the actual `recipe-card refresh` CLI with a temporary, four-recipe-budget local configuration: original-photo mode and the exception enabled, **queue_enabled=false**. It successfully cached **four usable real recipes/photos**.
+- Ran the actual cache-only `generate` CLI. It created a **1920 × 1200 RGB PNG** for [Sloe gin](https://www.bbcgoodfood.com/recipes/sloe-gin) using the image identified by that recipe's JSON-LD (`sloe-gin-5868e97.jpg`). The CDN transformation query was removed for download; normal cached normalization/cropping was preserved.
+- Visually inspected the real card. An independent zxing-cpp decode returned the exact recipe URL. No queue journal existed in the temporary state, confirming no queued submission. The real photo/card stays in local user outputs and is excluded from the public repository.
+
+The application was tested from macOS, not remotely executed on the Pi. The Pi diagnosis provided by the user matches the reproduced fault. Nothing on the Pi was deployed, restarted or enabled. The strict default still requires the user to explicitly enable the scoped exception to work through this known robots dependency failure.
+
+Earlier source/photo checks below are retained as historical verification before this fix; their failed live-photo result is superseded by the successful v0.4.1 check above.
+
 ## Recipe-source refinement
 
 The existing application was extended without redesigning its renderer or scheduling. Discovery now combines the actual Trending recipes section, up to two popular recipe collections linked by the recipe hub, Latest added recipes on `/recipes`, and current-month/editorial seasonal collections. It validates exact recipe identities and takes each image from the matching Recipe object. General news, guides, reviews, collection heroes and related-recipe images are excluded.
@@ -18,11 +33,11 @@ The user requested original Good Food photographs for personal frame use. Defaul
 
 ## Current automated results
 
-- **124 recipe tests passed**: original source, rendering, cache, offline, DST, rotation, atomic-write and snapshot tests, plus alternating-mode contract validation, exact receipts, missed active-card polls, frame restart recovery, ambiguous replies, definite HTTP rejection, unknown pending recipe protection and a deterministic three-hour simulation.
+- **139 recipe tests passed**: original source, rendering, cache, offline, DST, rotation, atomic-write and snapshot tests, plus alternating-mode contract validation, exact receipts, missed active-card polls, frame restart recovery, ambiguous replies, definite HTTP rejection, unknown pending recipe protection and a deterministic three-hour simulation.
 - **97 frame tests passed** across existing cards, new card sequence, configuration, frame core and UI schema. This runs the actual patched SlideshowController with normal test loaders/render mocks and a real temporary library. It covers reversed arrival order, repeated weather replacement, eight-photo spacing, no adjacent cards, invalid/missing expected files, decoder pause, persistence errors, corrupt state, normal restarts and default FIFO compatibility. One dependency deprecation warning from Starlette/httpx remains; no test failed.
 - **1 end-to-end test passed**, connecting the real recipe service to the patched frame's actual FastAPI command/state endpoints, command bus, SlideshowController and persisted library through an in-process HTTP test client. It generated immutable recipe PNGs, displayed weather/recipe/weather, acknowledged exact paths and recovered lost pending work after controller restart. No network or real graphics hardware was used.
 
-Total: **222 passing tests across those three runs**. The recipe suite uses mocked HTTP; the end-to-end test uses an in-process API. The physical display is not exercised.
+Total: **237 passing tests across those three runs**. The recipe suite uses mocked HTTP; the end-to-end test uses an in-process API. The physical display is not exercised.
 
 The three-hour timing simulator keeps the weather producer on its existing 180-second cadence and recipes on a 60-second check. With eight 20-second photos, observed card starts alternate weather/recipe with gaps of **190 and 205 seconds** (fades omitted in this deterministic simulator). No speculative duplicate recipe submission is generated while a request remains pending.
 

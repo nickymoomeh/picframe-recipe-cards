@@ -30,7 +30,13 @@ Cards identify Good Food as the image source and link directly to the recipe by 
 
 The page client respects [site robots rules](https://www.bbcgoodfood.com/robots.txt). The photo client checks the image CDN's robots file, observes Crawl-delay/Request-rate, spaces requests by at least two seconds and retries transient GET failures at most once. It does not retry 401/403/429, use browser impersonation, bypass protections or fetch subscription content.
 
-On 31 October 2026 the image CDN's `/robots.txt` returned a 301 pointing to `https://www.fh8mfb9c5i.execute-api.eu-west-1.amazonaws.com/robots.txt`. That published hostname did not resolve in the live test. The downloader supports this exact robots redirect but fails closed when its rules cannot be retrieved. A probe of the standard hostname without the unexpected www prefix returned 403; that probe is not used as an alternative runtime route. No image was downloaded during this failed live verification. The application will use existing cached photos, or retry new downloads on a later metadata refresh. A manually saved original image can be supplied as a local override if required.
+On 31 October 2026 the image CDN's `/robots.txt` returned a 301 pointing to `https://www.fh8mfb9c5i.execute-api.eu-west-1.amazonaws.com/robots.txt`. That published hostname fails DNS resolution. Direct original photo requests succeed. The standard hostname without the unexpected www prefix returned 403 during the original diagnosis; the application does not rewrite or use that endpoint.
+
+Version 0.4.1 adds `allow_broken_cdn_robots_redirect = false`, an explicit CDN-only operator exception. When enabled, **only** a DNS error after following that exact known robots redirect permits direct requests to the already-validated recipe image asset URLs. It never synthesizes an Allow policy from the failure. Valid current rules and previously cached valid rules (including Disallow) remain enforced. Generic DNS/timeouts/server failures, invalid policies and 401/403/429 do not activate the exception. A corrupt cached policy fails closed. Recipe-site robots remain mandatory, and the client does not crawl the CDN or follow image redirects.
+
+The strict default retains the existing fail-closed policy. The enabled mode is an explicitly selected exception, not a claim of strict [RFC 9309 section 2.3.1.4](https://www.rfc-editor.org/rfc/rfc9309.html#section-2.3.1.4) behaviour or content authorization. See [CDN-ROBOTS.md](CDN-ROBOTS.md) for exact scope and update instructions.
+
+Before publishing v0.4.1, a live CLI refresh with the exception explicitly enabled downloaded/cached four matching original photos. A cache-only CLI generate produced a real Sloe gin 1920 × 1200 card, which was visually checked and its QR independently decoded to the exact recipe URL. No frame command was sent, and no live photograph/card is bundled in the public source repository.
 
 ## Demonstration asset provenance
 

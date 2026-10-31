@@ -2,6 +2,9 @@
 source_mode = "goodfood" # local remains available for manual imports.
 automated_metadata_permission = true
 image_source = "goodfood" # Always use the matching recipe photo; image_source="local" is optional manual mode.
+# Opt-in only: allow the exact known CDN robots redirect DNS failure.
+# Valid/cached Disallow rules, image restrictions, and website robots remain enforced.
+allow_broken_cdn_robots_redirect = false
 source_url = "https://www.bbcgoodfood.com/news-trends"
 recipes_url = "https://www.bbcgoodfood.com/recipes"
 include_new = true

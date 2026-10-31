@@ -36,7 +36,15 @@ The defaults now use **public Good Food metadata and the original recipe photogr
 
 Downloads use the known HTTPS Good Food image CDN only, with size/decode limits, timeouts, spacing, bounded retries and robots checks. Cached photos are reused without repeat image requests. Local photo overrides remain available. See [source notes](docs/SOURCES.md).
 
-**Live verification found a CDN issue:** its robots file redirects to a hostname that currently fails DNS resolution. The client follows that published redirect and retains cached photos if crawl rules cannot be retrieved. Consequently the live test could not download new photos; no successful live-photo preview is claimed. A previously cached or manually saved original photo remains usable offline.
+**CDN robots redirect workaround (v0.4.1):** strict mode remains the default. For the diagnosed redirect-to-unresolvable-hostname problem, you can explicitly set:
+
+```toml
+allow_broken_cdn_robots_redirect = true
+```
+
+This exception applies only to a DNS failure after the CDN's exact known robots redirect. It is not a global robots disable switch or permission inferred from an unavailable file. Valid/current and cached Disallow rules remain enforced; other failures and HTTP 401/403/429 still block downloads. Website robots checks remain mandatory. Read [the focused fix and Pi update steps](docs/CDN-ROBOTS.md).
+
+With the exception explicitly enabled in a temporary local config, a live refresh successfully cached four original recipe photos and generated a real 1920 × 1200 Sloe gin card with a verified recipe QR. Queueing stayed disabled. Live photos/cards remain local, not published in this repository.
 
 ## Install and inspect a preview
 

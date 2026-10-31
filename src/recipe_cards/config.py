@@ -13,6 +13,7 @@ class Config:
     source_mode: str = "goodfood"
     automated_metadata_permission: bool = True
     image_source: str = "goodfood"
+    allow_broken_cdn_robots_redirect: bool = False
     recipes_url: str = "https://www.bbcgoodfood.com/recipes"
     include_new: bool = True
     seasonal_auto: bool = True
