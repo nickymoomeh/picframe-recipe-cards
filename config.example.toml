@@ -1,0 +1,34 @@
+# Personal frame: use public Good Food metadata and original recipe photographs.
+source_mode = "goodfood" # local remains available for manual imports.
+automated_metadata_permission = true
+image_source = "goodfood" # Always use the matching recipe photo; image_source="local" is optional manual mode.
+source_url = "https://www.bbcgoodfood.com/news-trends"
+recipes_url = "https://www.bbcgoodfood.com/recipes"
+include_new = true
+seasonal_auto = true # Current UK month collection plus seasonal inspiration from the recipe hub.
+include_trending = true
+include_seasonal = true
+# Optional seasonal collections (up to 4). Empty uses current-month/editorial sources.
+# Set seasonal_auto=false to use only your explicit seasonal URLs.
+seasonal_urls = []
+manifest = "~/.config/recipe-card/recipes.json"
+output_dir = "/home/pi4/FrameCards"
+state_dir = "~/.local/state/recipe-card"
+api_url = "http://localhost:9000/api/command"
+queue_enabled = false # Enable manually only after preview and frame-patch testing.
+queue_mode = "frame_sequence" # Requires integration/picframe-card-sequence.patch; independent is the legacy mode.
+duration = 45
+refresh_hours = 12
+queue_minutes = 15 # Used only in legacy independent mode; never controls alternating display.
+window_start = "07:00"
+window_end = "20:30" # End exclusive. Equal endpoints mean all day; overnight allowed.
+timezone = "Europe/London"
+width = 1920
+height = 1200
+font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+font_bold = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+request_timeout = 10
+request_spacing = 2 # At least 2 seconds; robots Crawl-delay can increase it.
+max_recipes = 24
+max_snapshots = 256
+retention_days = 1

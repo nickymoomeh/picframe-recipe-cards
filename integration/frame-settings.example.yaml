@@ -1,0 +1,8 @@
+# MERGE into the existing picframe3 local configuration after applying the patch.
+# This is a fragment, not a replacement for your complete frame configuration.
+slideshow:
+  card_directory: /home/pi4/FrameCards
+  card_every: 8
+  card_consecutive: false
+  card_sequence: [weather, recipe]
+  interval: 20

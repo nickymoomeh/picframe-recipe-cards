@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "recipes": [
+    {
+      "title": "Roasted pumpkin & sage risotto",
+      "url": "https://www.bbcgoodfood.com/recipes/pumpkin-risotto",
+      "description": "Golden pumpkin, fragrant sage and a comforting bowl for autumn evenings.",
+      "prep": "15m",
+      "cook": "35m",
+      "difficulty": "Easy",
+      "rating": 4.7,
+      "rating_count": 128,
+      "category": "trending",
+      "image": "demo-food.png",
+      "image_permission": "owned",
+      "credit": "AI-generated demonstration image · not Good Food photography",
+      "demonstration": true
+    }
+  ]
+}

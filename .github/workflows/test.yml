@@ -1,0 +1,33 @@
+name: Tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: sudo apt-get update && sudo apt-get install -y fonts-dejavu-core
+      - run: python -m pip install -e '.[dev]'
+      - run: python -m pytest -q
+  frame-sequence-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/checkout@v4
+        with:
+          repository: nickymoomeh/Digital-Picture-Frame-Pi-2026
+          ref: 04d9aa13068263073fc1bb4a7e2a6d2d599f6e36
+          path: frame-reference
+      - run: git -C frame-reference apply --check ../integration/picframe-card-sequence.patch
+      - run: git -C frame-reference apply ../integration/picframe-card-sequence.patch
+      - run: python -m pip install -e '.[dev]' -e './frame-reference[web,dev]'
+      - run: python -m pytest -q frame-reference/tests/test_cards.py frame-reference/tests/test_card_sequence.py frame-reference/tests/test_config.py frame-reference/tests/test_frame_core.py frame-reference/tests/test_uischema.py
+      - run: PYTHONPATH=frame-reference/src:src python -m pytest -q integration/test_frame_recipe_sequence.py

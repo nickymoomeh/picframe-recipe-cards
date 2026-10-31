@@ -1,0 +1,413 @@
+diff --git a/docs/CARDS.md b/docs/CARDS.md
+index c16fdfb..95c2764 100644
+--- a/docs/CARDS.md
++++ b/docs/CARDS.md
+@@ -117,3 +117,44 @@ avoid photo captions and Ken Burns movement to keep text readable, and use a
+ fade regardless of the photo transition selection. Existing clock and user
+ overlays remain available. Hardware rendering must still be verified on a Pi;
+ unit tests substitute textures on systems without EGL/DRM.
++
++## Optional strict card sequence
++
++Set locally (not through remote settings), after installing the sequence patch:
++
++```yaml
++slideshow:
++  card_directory: /home/pi4/FrameCards
++  card_every: 8
++  card_consecutive: false
++  card_sequence: [weather, recipe]
++  interval: 20
++```
++
++An empty `card_sequence` keeps the existing FIFO policy. A configured sequence
++accepts only its named types and requires `card_consecutive: false`. It selects
++only the next type at an eligible natural boundary, then advances the turn
++once that card has been decoded and accepted by the renderer. Wrong-type
++pending entries wait, even if their producer refreshes them repeatedly. A
++missing or invalid required type leaves photographs running while waiting;
++strict alternation does not silently substitute another weather card.
++
++The next turn and last-shown path per type are persisted in existing library
++metadata under `information_card_sequence_v1`. Normal restarts preserve the
++turn while clearing the existing memory-only pending queue. The state object's
++`card` includes additive `sequence`, `next_type`, `last_shown`, `sequence_error`,
++`session` and `pending_types` fields. Producers may use exact path receipts to
++release immutable snapshots, and session changes to detect lost pending work.
++The receipt means accepted by the renderer, not that the entire duration elapsed.
++
++No new timer is introduced. Keep weather's existing three-minute replenishment
++and 30-second duration. A recipe producer checks once a minute, replenishes a
++recipe turn once with a 45-second card, and does not impose a fifteen-minute
++display interval. Eight 20-second photos give card-start gaps of roughly 190
++and 205 seconds plus fades; videos and pauses lengthen them.
++
++Corrupt or changed persisted sequence state and persistence errors stop cards
++while leaving photos running. Review/repair the library state before resetting
++it. A crash between rendering and cursor persistence can lose the newest turn;
++there is no atomic transaction spanning pixels and disk. Configuration and
++service activation are manual; nothing in this patch enables a timer.
+diff --git a/src/picframe3/config.py b/src/picframe3/config.py
+index deb8201..28c3fa3 100644
+--- a/src/picframe3/config.py
++++ b/src/picframe3/config.py
+@@ -63,6 +63,7 @@ class SlideshowConfig:
+     card_directory: str = ""              # empty disables local cards
+     card_every: int = 8                    # normal photo slides between cards
+     card_consecutive: bool = False
++    card_sequence: list[str] = field(default_factory=list)  # opt-in strict display order
+     interval: float = 180.0               # seconds a picture stays up
+     transition: str = "fade"              # or "random"
+     transition_time: float = 2.5
+diff --git a/src/picframe3/slideshow.py b/src/picframe3/slideshow.py
+index 351a9bc..d0faa53 100644
+--- a/src/picframe3/slideshow.py
++++ b/src/picframe3/slideshow.py
+@@ -37,6 +37,8 @@ import logging
+ import math
+ import os
+ import time
++import threading
++import uuid
+ from pathlib import Path
+ from typing import Any
+ 
+@@ -82,6 +84,22 @@ class SlideshowController:
+         self.card: dict | None = None
+         self.photos_since_card = 0
+         self._card_hold_at: float | None = None
++        self._card_sequence = None
++        self._card_sequence_lock = threading.Lock()
++        self._card_session = uuid.uuid4().hex
++
++    def _sequence(self):
++        if not self.config.slideshow.card_sequence:
++            return None
++        if self.config.slideshow.card_consecutive:
++            raise ValueError("card_sequence requires card_consecutive: false")
++        with self._card_sequence_lock:
++            if self._card_sequence is None:
++                from .cardsequence import CardSequence
++                self._card_sequence = CardSequence(self.config.slideshow.card_sequence, self.library)
++        if self._card_sequence.error:
++            raise ValueError(self._card_sequence.error)
++        return self._card_sequence
+ 
+     def validate_card(self, payload: dict) -> dict:
+         directory = self.config.slideshow.card_directory
+@@ -104,6 +122,9 @@ class SlideshowController:
+         name = payload.get("type", path.stem)
+         if not isinstance(name, str) or not name.strip() or len(name) > 128:
+             raise ValueError("card type must be a nonempty string of at most 128 characters")
++        policy = self._sequence()
++        if policy and name not in policy.sequence:
++            raise ValueError("card type is not in slideshow.card_sequence")
+         with path.open("rb"):
+             pass
+         return {"path": str(path), "duration": float(duration), "type": name}
+@@ -126,7 +147,17 @@ class SlideshowController:
+             self._card_hold_at = None
+ 
+     def card_state(self, now: float) -> dict:
++        extra = {}
++        if self.config.slideshow.card_sequence:
++            try:
++                extra = self._sequence().state()
++            except ValueError as exc:
++                extra = {"sequence": self.config.slideshow.card_sequence,
++                         "next_type": None, "last_shown": {}, "sequence_error": str(exc)}
+         return {
++            **extra,
++            "session": self._card_session,
++            "pending_types": list(self.cards),
+             "active": self.card is not None,
+             "type": self.card["type"] if self.card else None,
+             "remaining": self.next_change_in(now) if self.card else 0,
+@@ -141,7 +172,15 @@ class SlideshowController:
+                 or (self.card and not cfg.card_consecutive)
+                 or (not self.card and self.photos_since_card < max(1, cfg.card_every))):
+             return False
+-        for name in list(self.cards):
++        try:
++            policy = self._sequence()
++        except ValueError as exc:
++            _log.error("card sequence stopped: %s", exc)
++            return False
++        names = [policy.next_type] if policy else list(self.cards)
++        for name in names:
++            if name not in self.cards:
++                continue
+             candidate = self.cards.pop(name)
+             try:
+                 candidate = self.validate_card(candidate)
+@@ -168,6 +207,13 @@ class SlideshowController:
+             self._card_hold_at = None
+             self.photos_since_card = 0
+             self.renderer.set_overlay("info", None)
++            if policy:
++                try:
++                    policy.shown(name, candidate["path"])
++                except ValueError as exc:
++                    # This card is already on screen. Preserve its duration;
++                    # policy.error stops further cards while photos continue.
++                    _log.error("%s", exc)
+             self.frame.mark_dirty()
+             self.frame._publish()
+             return True
+diff --git a/src/picframe3/uischema.py b/src/picframe3/uischema.py
+index f5de034..1b36d09 100644
+--- a/src/picframe3/uischema.py
++++ b/src/picframe3/uischema.py
+@@ -65,6 +65,7 @@ SECTION_LABELS = {
+ NOTES = {
+     "slideshow.card_directory": "Local card directory; empty disables cards. Set in local YAML only. Keep outside photo folders. See docs/CARDS.md.",
+     "slideshow.card_every": "Normal photo slides between queued cards (minimum one; default eight).",
++    "slideshow.card_sequence": "Optional strict card type order, e.g. weather then recipe. Empty keeps FIFO. Set in local YAML; requires card_consecutive false. Missing types wait while photos continue.",
+     "slideshow.card_consecutive": "Allow waiting cards consecutively; otherwise keep a photo gap between cards.",
+     "display.backend": "`auto` uses the screen if there is one, otherwise renders offscreen.",
+     "display.rotate": "0 or 180. For a quarter turn rotate in the kernel (`video=HDMI-A-1:1080x1920M@60,rotate=90`) so the Pi reports a portrait mode.",
+@@ -393,8 +394,8 @@ def check_path_setting(key: str, value: Any, config: Any = None) -> str | None:
+     One helper for every surface -- the HTTP API, and MQTT through the app --
+     so a path the web interface refuses cannot be smuggled in over the broker.
+     """
+-    if key == "slideshow.card_directory":
+-        return "slideshow.card_directory must be configured in the local YAML file"
++    if key in {"slideshow.card_directory", "slideshow.card_sequence"}:
++        return f"{key} must be configured in the local YAML file"
+     if key not in PATH_KEYS:
+         return None
+     extra = config_roots(config)
+diff --git a/src/picframe3/cardsequence.py b/src/picframe3/cardsequence.py
+new file mode 100644
+index 0000000..6e7b179
+--- /dev/null
++++ b/src/picframe3/cardsequence.py
+@@ -0,0 +1,58 @@
++"""Optional display-driven card ordering; no timers or generator dependencies."""
++from __future__ import annotations
++
++import threading
++from typing import Any
++
++STATE_KEY = "information_card_sequence_v1"
++
++
++class CardSequence:
++    def __init__(self, sequence: list[str], library: Any):
++        if (not isinstance(sequence, list) or not 2 <= len(sequence) <= 64
++                or any(not isinstance(t, str) or not t.strip() or len(t) > 128 for t in sequence)
++                or len(set(sequence)) != len(sequence)):
++            raise ValueError("card_sequence requires 2–64 distinct, nonempty type names")
++        if library is None:
++            raise ValueError("card sequence requires the frame library")
++        self.sequence = list(sequence)
++        self.library = library
++        self.error = None
++        self._lock = threading.RLock()
++        try:
++            state = library.get_state(STATE_KEY)
++        except Exception as exc:
++            raise ValueError(f"cannot read card sequence state: {exc}") from exc
++        if state is None:
++            state = {"sequence": self.sequence, "next_type": sequence[0], "last_shown": {}}
++        if (not isinstance(state, dict) or state.get("sequence") != self.sequence
++                or state.get("next_type") not in self.sequence
++                or not isinstance(state.get("last_shown"), dict)
++                or any(t not in self.sequence or not isinstance(p, str)
++                       for t, p in state["last_shown"].items())):
++            raise ValueError("invalid/changed persisted card sequence; review its library state before resetting")
++        self.next_type = state["next_type"]
++        self.last_shown = dict(state["last_shown"])
++
++    def shown(self, name: str, path: str) -> None:
++        with self._lock:
++            self._record_shown(name, path)
++
++    def _record_shown(self, name: str, path: str) -> None:
++        if self.error or name != self.next_type:
++            raise ValueError(self.error or "card displayed out of sequence")
++        following = self.sequence[(self.sequence.index(name) + 1) % len(self.sequence)]
++        shown = {**self.last_shown, name: path}
++        try:
++            self.library.set_state(STATE_KEY, {
++                "sequence": self.sequence, "next_type": following, "last_shown": shown,
++            })
++        except Exception as exc:
++            self.error = f"cannot persist card sequence; further cards stopped: {exc}"
++            raise ValueError(self.error) from exc
++        self.next_type, self.last_shown = following, shown
++
++    def state(self) -> dict:
++        with self._lock:
++            return {"sequence": list(self.sequence), "next_type": self.next_type if not self.error else None,
++                    "last_shown": dict(self.last_shown), "sequence_error": self.error}
+diff --git a/tests/test_card_sequence.py b/tests/test_card_sequence.py
+new file mode 100644
+index 0000000..70eae5c
+--- /dev/null
++++ b/tests/test_card_sequence.py
+@@ -0,0 +1,164 @@
++"""Display order is independent of generator timer phase and replacement rate."""
++import time
++from pathlib import Path
++from unittest.mock import AsyncMock, Mock
++
++import pytest
++from PIL import Image
++
++from picframe3.app import PicFrame
++from picframe3.cardsequence import CardSequence, STATE_KEY
++from picframe3.config import Config
++from picframe3.library.db import Library
++from picframe3.media.loader import SlideLoader
++from picframe3.media.prepare import PrepareOptions
++
++
++@pytest.fixture
++async def ordered(tmp_path, monkeypatch):
++    cfg = Config()
++    cfg.slideshow.card_directory = str(tmp_path)
++    cfg.slideshow.card_sequence = ['weather', 'recipe']
++    f = PicFrame(cfg)
++    f.library = Library(str(tmp_path / 'cards.db3'))
++    f.renderer = Mock(in_transition=False)
++    f.loader = SlideLoader((80, 50), PrepareOptions())
++    f.playlist = Mock()
++    f._publish = Mock()
++    monkeypatch.setattr('picframe3.slideshow.Texture.from_image', lambda image, **kw: image)
++    yield f
++    f.loader.close()
++    f.library.close()
++
++
++def request(f, name, duration=None):
++    p = Path(f.config.slideshow.card_directory) / f'{name}.png'
++    Image.new('RGB', (80, 50), 'green').save(p)
++    return dict(path=str(p), type=name, duration=duration or (30 if name == 'weather' else 45))
++
++
++async def show_boundary(f, photos=8):
++    s = f.slideshow
++    s.card = None  # End the preceding card, as a normal photo would.
++    s.photos_since_card = photos
++    return await s._try_card()
++
++
++async def test_out_of_order_submission_and_replacement_alternate(ordered):
++    f, s = ordered, ordered.slideshow
++    s.queue_card(request(f, 'recipe'))  # Recipe arrives first.
++    s.queue_card(request(f, 'weather'))
++    assert await show_boundary(f)
++    assert s.card['type'] == 'weather' and s.card['duration'] == 30
++    assert s.card_state(time.monotonic())['next_type'] == 'recipe'
++    for _ in range(20):
++        s.queue_card(request(f, 'weather'))
++    assert list(s.cards) == ['recipe', 'weather']
++    assert not await show_boundary(f, 7)
++    assert await show_boundary(f, 8)
++    assert s.card['type'] == 'recipe' and s.card['duration'] == 45
++    assert await show_boundary(f)
++    assert s.card['type'] == 'weather'
++    assert not await show_boundary(f)  # Missing recipe cannot repeat weather.
++    f.playlist.next.assert_not_called()
++    assert f.library.get_state(STATE_KEY)['next_type'] == 'recipe'
++
++
++async def test_missing_and_invalid_expected_card_preserve_turn(ordered):
++    f, s = ordered, ordered.slideshow
++    s.queue_card(request(f, 'weather'))
++    assert await show_boundary(f)
++    s.queue_card(request(f, 'weather'))
++    assert not await show_boundary(f)
++    bad = request(f, 'recipe')
++    s.queue_card(bad)
++    Path(bad['path']).write_bytes(b'broken')
++    assert not await show_boundary(f)
++    assert s.card_state(time.monotonic())['next_type'] == 'recipe'
++    s.queue_card(request(f, 'recipe'))
++    assert await show_boundary(f)
++    assert s.card['type'] == 'recipe'
++
++
++async def test_restart_retains_turn_and_receipt(ordered):
++    f, s = ordered, ordered.slideshow
++    weather = request(f, 'weather')
++    s.queue_card(weather)
++    assert await show_boundary(f)
++    from picframe3.slideshow import SlideshowController
++    restarted = SlideshowController(f)
++    assert restarted.card_state(time.monotonic())['next_type'] == 'recipe'
++    assert restarted.card_state(time.monotonic())['last_shown']['weather'] == weather['path']
++    assert restarted.card_state(time.monotonic())['session'] != s.card_state(time.monotonic())['session']
++    restarted.queue_card(request(f, 'weather'))
++    restarted.photos_since_card = 8
++    assert not await restarted._try_card()
++
++
++async def test_pause_during_decode_does_not_advance(ordered):
++    f, s = ordered, ordered.slideshow
++    s.queue_card(request(f, 'weather'))
++    load = f.loader.load
++    async def pause(metas):
++        result = await load(metas)
++        f.paused = True
++        return result
++    f.loader.load = pause
++    assert await show_boundary(f)
++    assert s.card is None
++    assert s.card_state(time.monotonic())['next_type'] == 'weather'
++    assert list(s.cards) == ['weather']
++    assert f.library.get_state(STATE_KEY) is None
++
++
++async def test_no_adjacent_cards_even_if_config_conflicts(ordered):
++    f, s = ordered, ordered.slideshow
++    f.config.slideshow.card_consecutive = True
++    with pytest.raises(ValueError, match='card_consecutive'):
++        s.queue_card(request(f, 'weather'))
++    assert s.card_state(time.monotonic())['sequence_error']
++
++
++async def test_only_configured_types_accepted(ordered):
++    with pytest.raises(ValueError, match='not in'):
++        ordered.slideshow.queue_card(request(ordered, 'news'))
++
++
++@pytest.mark.parametrize('sequence', [['weather'], ['weather', 'weather'], ['weather', ''], 'weather', ['weather', 3]])
++def test_invalid_sequences(sequence):
++    with pytest.raises(ValueError):
++        CardSequence(sequence, Mock())
++
++
++async def test_persistence_failure_stops_cards_not_photos(ordered):
++    f, s = ordered, ordered.slideshow
++    f.library.set_state = Mock(side_effect=OSError('disk full'))
++    s.queue_card(request(f, 'weather'))
++    assert await show_boundary(f)
++    assert s.card['type'] == 'weather'
++    assert s.card_state(time.monotonic())['sequence_error']
++    s._advance_locked = AsyncMock()
++    await s.advance()
++    s._advance_locked.assert_awaited_once()
++
++
++async def test_corrupt_state_fails_closed(ordered):
++    f = ordered
++    f.library.set_state(STATE_KEY, {'broken': True})
++    assert f.slideshow.card_state(time.monotonic())['sequence_error']
++    with pytest.raises(ValueError, match='persisted'):
++        f.slideshow.queue_card(request(f, 'weather'))
++
++
++async def test_cursor_advances_only_after_successful_show(ordered):
++    f, s = ordered, ordered.slideshow
++    s.queue_card(request(f, 'weather'))
++    f.renderer.show.side_effect = ValueError('renderer failed')
++    assert not await show_boundary(f)
++    assert f.library.get_state(STATE_KEY) is None
++    assert s.card_state(time.monotonic())['next_type'] == 'weather'
++
++
++def test_local_yaml_only():
++    from picframe3.uischema import check_path_setting
++    assert check_path_setting('slideshow.card_sequence', ['weather', 'recipe'])
